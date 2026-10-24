@@ -1,157 +1,223 @@
-# Stremio AI Subtitles (Cloudflare Workers)
+# Stremio Hebrew AI Subtitles (Cloudflare Worker + Gemini)
 
-A Stremio **subtitles addon** that takes the English subtitle Stremio's OpenSubtitles addon already offers, translates it with
-**Google Gemini** (Hebrew by default; other languages configurable), **keeps the original timing**, caches the result and shows it
-in the subtitle picker as **`עברית - AI`**. It runs entirely on Cloudflare (Workers + KV + one Durable Object class), so it works on every
-device logged into your Stremio account without your phone or PC being on.
+A [Stremio](https://www.stremio.com) addon that adds an **AI-translated Hebrew subtitle** to any movie or series that has an English subtitle.
 
-* Errors are shown as a one-cue subtitle with the reason. **There is no silent fallback** to another engine.
-* Hard local budget: **25 new translations per day** (`DAILY_LIMIT`). Cached titles are free and don't count.
-* The addon URL contains a private token. Wrong token = `404`.
+It takes the English subtitle that Stremio already offers, translates the **text only** with Google Gemini, re-attaches the **original timing**, caches the result, and shows it in the player's subtitle menu. Other target languages are a one-line config change.
 
-## Endpoints
+It runs entirely on **Cloudflare Workers** (Free plan is enough), so once installed it works on **every device signed in to your Stremio account** (phone, TV, desktop) without your own computer or phone being on.
 
-| Path | Purpose |
-|---|---|
-| `/{TOKEN}/manifest.json` | Stremio manifest (`subtitles`, `movie`+`series`, id prefix `tt`) |
-| `/{TOKEN}/subtitles/{type}/{id}[/{extra}].json` | Lists one `heb` / `עברית - AI` entry per title (source: `opensubtitles-v3.strem.io`) |
-| `/{TOKEN}/translated/{lang}.{base64url(source .srt URL)}.srt` | Translates on first request, then serves from KV |
+> **Cost and privacy in one paragraph.** You bring your own Gemini API key and your own Cloudflare account. Cloudflare Free is $0. A Gemini key on the free tier is $0 but is rate limited (see [Gemini key](#2-get-a-gemini-api-key)); a billed key costs a small amount per movie. The addon URL contains a private token, so keep it to yourself: anyone who has the URL can spend your Gemini quota. A hard cap of **25 new translations per day** limits the damage either way.
 
-All responses carry `Access-Control-Allow-Origin: *`.
+---
 
-## Deploy (exact steps)
+## How it looks to the user
 
-You need: Node.js 20+, a Cloudflare account (Free plan is enough), a Gemini API key (https://aistudio.google.com/apikey).
+1. Play a movie or episode in Stremio (any stream).
+2. Open the subtitles menu, tap **עברית** (Hebrew), and choose the entry named **AI Subtitles (Hebrew)**. On Android, Stremio ignores custom labels, so it shows as plain Hebrew next to real Hebrew subtitles; the AI one is the entry listed under this addon.
+3. The **first** time for a title, a one-line message appears: *"AI translation in progress … not an error"*. A full movie takes about **1 to 3 minutes**. Turn subtitles off and select it again after about a minute.
+4. Done. The full Hebrew subtitle plays. The result is cached for 180 days, so every device (and everyone using your addon) gets it instantly afterwards.
+5. If you see *"AI translation failed"*, wait about 2 minutes and select it again. Failures are never cached.
 
-### A. Scripted (recommended)
+---
 
-1. Create a Cloudflare API token (dashboard -> My Profile -> API Tokens -> Create Token -> *Create Custom Token*) with **Account -> Workers Scripts -> Edit** and **Account -> Workers KV Storage -> Edit**. Find your **Account ID** in the dashboard (Workers & Pages -> right sidebar).
-2. The account needs a `workers.dev` subdomain (Workers & Pages asks you to pick one the first time you open it).
-3. Run:
-   ```bash
-   cd worker
-   export CLOUDFLARE_API_TOKEN=...      # from step 1
-   export CLOUDFLARE_ACCOUNT_ID=...     # from step 1
-   export GEMINI_API_KEY=...            # Google AI Studio key
-   export ACCESS_TOKEN=$(openssl rand -hex 24)   # private token for the addon URL; save it!
-   ./deploy.sh
-   ```
-   The script installs dependencies, creates (or reuses) the KV namespace `stremio-ai-subs-cache`, writes `wrangler.generated.toml` with its id,
-   deploys the Worker, sets the secrets `ACCESS_TOKEN` and `GEMINI_API_KEY`, smoke-tests it and prints the install URL.
-   `DRY_RUN=1 ./deploy.sh` only validates inputs and bundles the Worker (no Cloudflare calls).
+## Install it yourself (about 10 minutes)
 
-### B. Manual
+You need: a **Cloudflare account** (free), a **Google account** for the Gemini key, **Node.js 20 or newer**, and `git`.
+
+### 1. Get the code
 
 ```bash
-cd worker && npm install
-npx wrangler login                      # or: export CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=...
-npx wrangler kv namespace create CACHE  # copy the printed id into wrangler.toml -> [[kv_namespaces]] id
-npx wrangler deploy
-npx wrangler secret put ACCESS_TOKEN    # paste e.g. the output of: openssl rand -hex 24
-npx wrangler secret put GEMINI_API_KEY
+git clone https://github.com/OferLazmi/stremio-hebrew-ai-subs.git
+cd stremio-hebrew-ai-subs
 ```
 
-### Install in Stremio
+(If the repo is private, ask the owner for access first.)
 
-`stremio://<worker-name>.<your-subdomain>.workers.dev/<ACCESS_TOKEN>/manifest.json`
-(open that link, or paste the `https://...` form into Stremio -> Addons -> search box). Because Stremio addons are tied to your account,
-it then appears on all your devices. Pick **`עברית - AI`** in the subtitle menu while playing.
+### 2. Get a Gemini API key
+
+1. Open <https://aistudio.google.com/apikey> and sign in with a Google account.
+2. Click **Create API key** and copy it. Keep it secret.
+3. Pick the tier:
+   * **Free tier (no billing).** Works, but Google limits it to roughly **15 requests per minute per model**. Set `RPM_PER_MODEL = "12"` and `BATCHES_PER_STEP = "2"` in `wrangler.toml` before deploying. A movie then takes a few minutes the first time. Google may use free-tier content to improve its products (subtitles are not personal data).
+   * **Billed tier (recommended).** Attach a billing account to the key's project in AI Studio ("Set up billing" on the key). Rate limits are much higher, and a full movie translates in roughly 1 minute. Cost is per use and small (a movie is about 10 to 25 requests on a cheap model). Google is moving AI Studio accounts to prepaid credits, so you may be asked to buy credits (minimum $5) instead of paying afterwards.
+
+### 3. Create a Cloudflare API token
+
+1. Sign up or log in at <https://dash.cloudflare.com>.
+2. Open **Workers & Pages** once. If it asks you to choose a `workers.dev` subdomain, pick one (this is part of your final addon URL).
+3. Find your **Account ID** (Workers & Pages page, right-hand sidebar).
+4. Go to **My Profile → API Tokens → Create Token → Create Custom Token** and give it exactly these permissions:
+   * **Account → Workers Scripts → Edit**
+   * **Account → Workers KV Storage → Edit**
+   * **Account → Account Settings → Read**
+5. Copy the token.
+
+### 4. Deploy
+
+```bash
+export CLOUDFLARE_API_TOKEN=...             # from step 3
+export CLOUDFLARE_ACCOUNT_ID=...            # from step 3
+export GEMINI_API_KEY=...                   # from step 2
+export ACCESS_TOKEN=$(openssl rand -hex 24) # private token for your addon URL
+echo "$ACCESS_TOKEN"                        # save it somewhere safe!
+./deploy.sh
+```
+
+The script installs dependencies, creates (or reuses) a KV namespace named `stremio-ai-subs-cache`, deploys the Worker, stores `ACCESS_TOKEN` and `GEMINI_API_KEY` as Worker secrets, runs a smoke test, and prints your install URL:
+
+```
+https://stremio-he-subs.<your-subdomain>.workers.dev/<ACCESS_TOKEN>/manifest.json
+```
+
+Useful: `DRY_RUN=1 ./deploy.sh` only validates inputs and bundles the Worker, without calling Cloudflare.
+
+<details>
+<summary>Manual deploy instead of the script</summary>
+
+```bash
+npm install
+npx wrangler login                      # or export CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID
+npx wrangler kv namespace create CACHE  # copy the printed id into wrangler.toml -> [[kv_namespaces]] id
+npx wrangler deploy
+npx wrangler secret put ACCESS_TOKEN    # e.g. output of: openssl rand -hex 24
+npx wrangler secret put GEMINI_API_KEY
+```
+</details>
+
+### 5. Add the addon to Stremio
+
+Stremio addons belong to your account, so install once and it appears on all your devices.
+
+* **Any platform (works everywhere):** open Stremio → **Addons** → type or paste your full `https://…/manifest.json` URL into the search box at the top → **Install**.
+* **Desktop shortcut:** open `stremio://stremio-he-subs.<your-subdomain>.workers.dev/<ACCESS_TOKEN>/manifest.json` in a browser.
+* **Android note:** the `stremio://` link does not always open from a browser; pasting the `https://` URL into the Addons search box always works.
+
+Then play something and use the subtitles menu as described [above](#how-it-looks-to-the-user).
+
+### Updating later
+
+Pull the latest code and run `./deploy.sh` again with the same environment variables (use the **same** `ACCESS_TOKEN` so your install URL does not change). No reinstall in Stremio is needed.
+
+### Uninstalling
+
+Stremio → Addons → remove the addon. In Cloudflare, delete the Worker `stremio-he-subs` and the KV namespace `stremio-ai-subs-cache`. Revoke the Cloudflare API token and the Gemini key if you no longer need them.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| Subtitle menu has no AI entry | Open the **עברית** language row (not the English one) and look for "AI Subtitles (Hebrew)". Stremio only asks addons for subtitles once a real stream is **playing** (not trailers). Make sure the addon is installed and shows in Addons. |
+| "AI translation in progress" | Normal for the first view. Wait about a minute, turn subtitles off, select it again. |
+| "AI translation failed … Gemini HTTP 429" | Your Gemini key hit its rate limit. Use the free-tier settings in step 2, or attach billing. The Worker already waits and retries on 429. |
+| "Gemini HTTP 400/403 … API key" | Wrong or disabled key. Re-run `./deploy.sh` with the right `GEMINI_API_KEY`. |
+| "Daily limit reached" | The 25 new translations per day cap (cached titles are free). Raise `DAILY_LIMIT` in `wrangler.toml` and redeploy. |
+| Addon URL returns 404 | Wrong `ACCESS_TOKEN` in the URL. |
+| Deploy says no `workers.dev` subdomain | Open Workers & Pages in the dashboard once and choose a subdomain, then re-run. |
+| Stray Arabic letters in a few lines | Rare model slip; the Worker retries and rejects wrong-script output, but a few lines can still slip through after 4 tries. |
+| Subtitle looks late or early | Timing is copied from the source subtitle, so the English one from the same source is equally off. Use Stremio's subtitle delay control. |
+
+---
 
 ## Configuration (`[vars]` in `wrangler.toml`)
 
 | Var | Default | Meaning |
 |---|---|---|
-| `GEMINI_MODELS` | `gemini-3.5-flash-lite,gemini-3-flash-preview` | Comma list, preferred first. Later models are used only while earlier ones are 429-paused (or return 404). |
-| `RPM_PER_MODEL` / `DEADLINE_SECONDS` | `60` / `900` | Per-model requests/min pacing (use ~12 on the Gemini FREE tier, 60+ on paid) / overall job deadline, after which the job fails with a clear message |
-| `TARGET_LANGS` | `he` | Comma list of target languages (`he,ru,es,ar,fr,de,...` - see `LANGS` in `src/config.ts`). One picker entry each |
-| `SOURCE_LANG` | `eng` | OpenSubtitles language code to translate from |
-| `DAILY_LIMIT` | `25` | New translations/day. Day boundary = midnight in `QUOTA_TZ` (`Asia/Jerusalem`) |
-| `BATCH_SIZE` / `BATCHES_PER_STEP` | `200` / `5` | Cues per Gemini request / parallel requests per step (max 6). `maxOutputTokens` is 32768 (200 cues ≈ 7k tokens) and structured-output (`responseSchema`) guarantees valid JSON |
-| `WAIT_SECONDS` | `25` | How long the `.srt` request waits for a fresh translation before showing "in progress" |
-| `FAIL_COOLDOWN_SECONDS` | `120` | After a failure, re-selecting within this time shows the error again without calling Gemini |
-| `CACHE_TTL_DAYS` | `180` | KV cache lifetime |
-| `RTL_MARKS` | `on` | Wrap lines of RTL languages in U+200F so punctuation lands on the correct side (**not verified in Stremio's player**; set `off` if it looks odd) |
-| `ALLOWED_SOURCE_HOSTS` | `strem.io` | Only `.srt` URLs on these hosts (https) can be translated |
-| `MAX_SOURCES` | `1` | How many source subtitles per title get a picker entry (each distinct one can use a translation) |
+| `GEMINI_MODELS` | `gemini-3.5-flash-lite,gemini-3-flash-preview` | Preferred model first. The next is used only while the first is rate-limit paused or returns 404. |
+| `RPM_PER_MODEL` | `60` | Requests per minute per model. Use `12` on the Gemini free tier. |
+| `BATCH_SIZE` / `BATCHES_PER_STEP` | `200` / `5` | Subtitle cues per Gemini request / parallel requests (max 6). Use `2` parallel on the free tier. |
+| `DEADLINE_SECONDS` | `900` | The job fails with a clear message after this long. |
+| `TARGET_LANGS` | `he` | Comma list of target languages (for example `he,ru,es,ar,fr,de`; see `LANGS` in `src/config.ts`). One picker entry each. |
+| `SOURCE_LANG` | `eng` | Language of the subtitle to translate from. |
+| `DAILY_LIMIT` | `25` | Max **new** translations per day (day rolls over at midnight in `QUOTA_TZ`). |
+| `QUOTA_TZ` | `Asia/Jerusalem` | Time zone for the daily reset. |
+| `WAIT_SECONDS` | `25` | How long the subtitle request waits before showing the "in progress" line. |
+| `FAIL_COOLDOWN_SECONDS` | `120` | After a failure, retrying sooner shows the error again without calling Gemini. |
+| `CACHE_TTL_DAYS` | `180` | How long finished translations stay cached. |
+| `RTL_MARKS` | `on` | Wrap right-to-left lines in a direction mark so punctuation lands on the correct side. Set `off` if it looks odd in your player. |
+| `ALLOWED_SOURCE_HOSTS` | `strem.io` | Only https subtitle URLs on these hosts can be translated. |
+| `MAX_SOURCES` | `1` | How many source subtitles per title get an entry. |
 
-Secrets: `ACCESS_TOKEN`, `GEMINI_API_KEY`.
+Secrets (set by `deploy.sh`, never in git): `ACCESS_TOKEN`, `GEMINI_API_KEY`.
 
-## Design
+---
+
+## How it works
 
 ```
-Stremio ──GET /subtitles/…json──► Worker ──► opensubtitles-v3.strem.io  (lists English subs)   → one "עברית - AI" entry
-Stremio ──GET /translated/….srt─► Worker ─► KV hit?  ── yes ──► SRT (instant)
+Stremio ── GET /subtitles/…json ──► Worker ──► opensubtitles-v3.strem.io (lists English subs)
+                                      └─ returns one "AI Subtitles (Hebrew)" entry (lang "heb")
+Stremio ── GET /translated/….srt ─► Worker ─► cached in KV? ── yes ──► SRT (instant)
                                       │ no
-                                      ├─ daily budget exhausted? → single-cue "limit reached" SRT
-                                      └─ Durable Object (one per language+source URL), driven by alarm() steps:
-                                            fetch  : download source .srt, store it
-                                            plan   : parse, split into ~80-cue batches (with 3 lines of context)
-                                            translate : 4 batches in parallel per step → Gemini generateContent (JSON in / JSON out)
-                                            finalize  : re-attach ORIGINAL timing lines, write SRT to KV
-                                      the .srt request just waits (wall-clock) for the job; > WAIT_SECONDS → "in progress" cue
+                                      ├─ daily budget used up? → one-line "limit reached" SRT
+                                      └─ Durable Object (one per language + source URL), driven by alarm steps:
+                                           fetch → plan (parse, ~200-cue batches) → translate (parallel Gemini calls)
+                                           → finalize (re-attach ORIGINAL timing, store in KV)
 ```
 
-Why a Durable Object + alarms: the Workers **Free** plan allows 10 ms CPU and 50 subrequests *per invocation*, and Stremio fetches the `.srt` once.
-Every `alarm()` is a fresh invocation with fresh limits, progress is persisted in DO SQLite storage after each step (an interrupted step is just retried), and the
-Gemini round-trips are I/O wait, which is not CPU time. The HTTP request that triggered the job only waits.
+* **Timing is never sent to the model.** Only text goes to Gemini and the original timing lines are re-attached by position, so timing is identical by construction. Missing or empty cues are re-requested (up to 4 tries), otherwise the job fails visibly.
+* **Formatting kept:** `<i>`, `<b>`, `<font>`, `{\an8}`, music notes and speaker dashes.
+* **429 is a pause, not a failure:** the job honours Gemini's `retryDelay`, reschedules itself, and can switch to the next model in `GEMINI_MODELS`.
+* **Why Durable Objects:** the Workers Free plan allows 10 ms of CPU and 50 subrequests per invocation. Each alarm step is a fresh invocation, progress is saved after every step, and waiting for Gemini is I/O (not CPU).
+* **Errors are visible:** a one-line subtitle explains what went wrong. There is no silent fallback to another translation engine. Failures are never cached.
+* **Security:** the token is compared in constant time; a wrong or missing token returns 404 for everything; only https hosts listed in `ALLOWED_SOURCE_HOSTS` are fetched.
+* **Picker entry:** `lang` is the ISO 639-2 code `heb` because Stremio's Android app hides entries with non-ISO language text and ignores labels. Consequence: if your Stremio *preferred subtitle language* is Hebrew, Stremio may auto-select it and start a translation. The daily cap bounds that cost.
 
-* **Timing is never sent to the model.** Only text goes to Gemini; the original timing lines are re-attached by position, so timing is identical by construction. The model must return the same `i` for every cue; missing/empty cues are re-requested (up to 4 attempts, backoff for 429/5xx), otherwise the job fails visibly.
-* **Tags kept:** `<i>`, `<b>`, `<font …>`, `{\an8}` are in the prompt rules; ♪ and speaker dashes are preserved.
-* **Daily limit:** KV counter per day (`quota:YYYY-MM-DD`), incremented when a *new* job starts (retries after failures count, cache hits and in-flight jobs don't). KV has no atomic increment; a race could overshoot by one - irrelevant for one user.
-* **Errors:** quota, bad key/model, Gemini failure, unparsable source, stalled job (>5 min without progress) all return a one-cue SRT (`no-store`) with the reason. Failures are never cached.
-* **Picker entry:** `lang` is the ISO 639-2 code `heb`, `label` is `עברית - AI`, `id` is `stremio-ai-he-<id>`. Stremio's Android app ignores `label` and shows a blank/"und" row for non-ISO `lang` text, so a real code is required. Consequence: on Android it shows as plain "עברית" next to real Hebrew subtitles, and Stremio's *preferred subtitle language = Hebrew* setting can auto-select it, which then requests the `.srt` and starts a translation. A listing request alone never starts a job; the `DAILY_LIMIT` (25/day) is the cap on auto-select cost.
-* **Security:** token compared in constant time; wrong/no token → 404 for everything (also if `ACCESS_TOKEN` is unset); only `https` hosts under `ALLOWED_SOURCE_HOSTS` can be fetched.
+### Endpoints
 
-## Cloudflare Free-plan limits this design relies on (verified Oct 2026 in the Cloudflare docs)
+| Path | Purpose |
+|---|---|
+| `/{TOKEN}/manifest.json` | Stremio manifest (subtitles, movie and series, ids starting `tt`) |
+| `/{TOKEN}/subtitles/{type}/{id}[/{extra}].json` | Lists the AI subtitle entry for a title |
+| `/{TOKEN}/translated/{lang}.{base64url(source .srt URL)}.srt` | Translates on first request, then serves from cache |
 
-Sources: developers.cloudflare.com/workers/platform/limits/ , /durable-objects/platform/limits/ , /kv/platform/limits/ , /durable-objects/platform/pricing/
+### Cloudflare Free-plan limits this relies on
 
-| Limit | Free plan | How this addon fits |
+| Limit | Free plan | Fit |
 |---|---|---|
-| Worker CPU per request | 10 ms (I/O wait not counted) | Front Worker does hashing/KV only; the heaviest step (parse ~1,700 cues) measured ≈2-3 ms in Node. |
-| Subrequests per invocation | 50 (KV/Cache calls count) | ≤ ~10 per invocation (4 Gemini + a few DO/KV calls) |
-| Simultaneous outgoing connections | 6 | `BATCHES_PER_STEP` capped at 6 |
-| Wall time | unlimited while client connected; `alarm()` 15 min | .srt request waits ≤ 90 s; alarm steps are seconds |
-| Durable Objects | allowed on Free **only with SQLite backend** (`new_sqlite_classes`, used here); 100k req/day, 100k rows written/day | one job ≈ 30 row writes and ~30 DO calls; 25 jobs/day is ≈ 1 % of the limits |
-| KV | 100k reads/day, **1,000 writes/day**, 1 write/s per key, 25 MiB values | ≈ 2 writes per new translation |
-| Workers requests | 100k/day | far below |
+| Worker CPU per invocation | 10 ms (I/O wait not counted) | Measured 0 to 10 ms; the tightest spot is the 10 ms Durable Object wait call. If you ever see error 1102, lower `BATCHES_PER_STEP` to 3, or use the $5/month Paid plan. |
+| Subrequests per invocation | 50 | Under about 10 |
+| Durable Objects | SQLite backend only (used here) | About 30 row writes per new translation |
+| KV writes | 1,000 per day | About 2 per new translation |
 
-## Honest caveats
+### Measured results (Oct 2026, billed Gemini key)
 
-* **Not tested against real Gemini or Cloudflare** (no credentials). Gemini was mocked locally; see "Tests". Real-model output quality, real latency (my estimate: **~30-90 s** for the first view of a ~1,700-cue movie), and real free-tier Gemini rate limits (429s are retried, but a very low-RPM key could still fail) are unverified.
-* **Stremio's own timeout for the subtitle download is unknown.** If it gives up before the translation is done, the user sees nothing/an error; re-selecting the subtitle later works (job continues and is cached). If this is a problem, a possible improvement is warming the cache from the *listing* request - at the cost of spending translations on titles that are never watched.
-* **CPU on Free (measured live, wrangler tail):** front Worker 0-4 ms, DO alarm steps 1-3 ms, DO `wait()` RPC up to 7 ms over a ~57 s wait (event-driven, no polling). No 1102/CPU errors in 3 live translations (391/425/364 cues). 7 ms is under the 10 ms cap but is the tightest number; the $5/month Paid plan removes the risk.
-* **RTL rendering** (`RTL_MARKS`) is untested in Stremio's players.
-* KV is eventually consistent (up to ~60 s across locations); fine for one user.
-* Gemini model names/APIs move quickly. `generateContent` (v1beta) is used; Google now labels it legacy in favour of the Interactions API but still supports it. If a model is retired the addon shows an error naming `GEMINI_MODELS`.
-* Gemini free tier may use submitted content to improve Google products; subtitles are not personal data, but be aware (use a billed key to opt out).
+2,127 cues in 71 s (23 requests); 898 cues in 43 s; 592 cues in 46 s. Timing identical to the source in all cases; a handful of stray Arabic letters in the largest titles.
 
-## Rate limits / 429 (Phase 4)
+---
 
-* HTTP 429 is a **pause, not a failure**: the Durable Object honours Gemini's `retryDelay` (default 60 s), reschedules its alarm and does not count it against the 4-attempt limit. A `PerDay` quota pauses 6 h (and hits the deadline).
-* Pacing: a per-model sliding 60 s window in DO state (`RPM_PER_MODEL`); with the free tier use `RPM_PER_MODEL=12`, `BATCHES_PER_STEP=2`.
-* If the first model is paused, the next one in `GEMINI_MODELS` is used.
-* The job fails with a clear message after `DEADLINE_SECONDS` (15 min).
-* The "in progress" cue is a one-cue SRT served `Cache-Control: no-store` after `WAIT_SECONDS`; the player must re-select the subtitle ~1 minute later.
-* Live measurement (paid-tier key, Oct 24 2026): 2,127 cues = 11 batches, 23 Gemini requests (retries for stray-script/partial output), 71 s end to end; 898 cues in 43 s. Max CPU seen 10 ms (DO `wait()` RPC, which also overlaps alarm work) - the free-plan CPU limit is the main residual risk.
-* Mock scenarios: `npx tsx test/e2e-rl.mjs <paced|pause|fallback|gone|deadline>`.
+## Known limitations
 
-## Tests
+* Needs an **English subtitle** to exist for the title (it translates, it does not transcribe audio).
+* Stremio's own timeout for the first request is unknown. The Worker answers within 25 s with the "in progress" line, and the job keeps running and is cached for the next try.
+* Stremio only requests subtitles when a real stream is playing.
+* Right-to-left rendering depends on the player; try `RTL_MARKS = "off"` if lines look odd.
+* `gemini-3-flash-preview` is a preview model and could be retired; update `GEMINI_MODELS` if so.
+* This is a personal tool, provided as is. You are responsible for your own API keys and costs, and for respecting the terms of the services and content you use it with.
+
+---
+
+## Development and tests
 
 ```bash
 npm install
-npm test                      # unit tests: SRT parse/serialize round trip (node:test via tsx)
+npm test                      # unit tests (SRT parse/serialize)
 npm run typecheck
-# end-to-end against `wrangler dev` with a MOCK Gemini and the REAL OpenSubtitles addon:
+# end-to-end against `wrangler dev` with a MOCK Gemini and the real OpenSubtitles addon:
 cp .dev.vars.example .dev.vars
-node test/mock-gemini.mjs &                                 # fake Gemini on :8799 (prefixes cues with "[he] ")
+node test/mock-gemini.mjs &
 npx wrangler dev --port 8787 --persist-to /tmp/wr --var GEMINI_BASE_URL:http://127.0.0.1:8799 --var DAILY_LIMIT:4 &
-npx tsx test/e2e.mjs                                        # needs internet (OpenSubtitles)
-# in-progress notice: restart wrangler with --var WAIT_SECONDS:3 and run: npx tsx test/e2e-slow.mjs
+npx tsx test/e2e.mjs                           # needs internet
+# 429 handling scenarios: npx tsx test/e2e-rl.mjs <paced|pause|fallback|gone|deadline>
 ```
-For a real local run (real Gemini), put your key in `.dev.vars`, run `npx wrangler dev` without `GEMINI_BASE_URL`.
 
-## Files
+For a real local run, put your key in `.dev.vars` and run `npx wrangler dev` without `GEMINI_BASE_URL`.
 
-`wrangler.toml` · `src/index.ts` (router, token, CORS, manifest, listing, .srt endpoint) · `src/job.ts` (Durable Object job) · `src/gemini.ts` (batch translate + retries) ·
-`src/srt.ts` · `src/quota.ts` · `src/config.ts` (vars, language table) · `deploy.sh` · `test/*` · `.dev.vars.example`
+### Files
+
+`wrangler.toml` · `src/index.ts` (router, token, manifest, listing, .srt endpoint) · `src/job.ts` (Durable Object job) · `src/gemini.ts` (batching, retries, 429 handling) · `src/srt.ts` · `src/quota.ts` · `src/config.ts` (vars, language table) · `deploy.sh` · `test/*` · `.dev.vars.example`
+
+## License
+
+MIT
