@@ -1,0 +1,36 @@
+name = "stremio-he-subs"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+workers_dev = true
+
+# KV: translated-SRT cache + daily counter.
+# deploy.sh creates/looks up the namespace and writes its id into a generated copy of this file.
+[[kv_namespaces]]
+binding = "CACHE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Durable Object that drives one translation job in small alarm steps (SQLite backend = allowed on Free).
+[[durable_objects.bindings]]
+name = "TRANSLATION_JOB"
+class_name = "TranslationJob"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TranslationJob"]
+
+[vars]
+GEMINI_MODELS = "gemini-3.5-flash-lite,gemini-3-flash-preview"  # preferred first; later ones used while earlier are 429-paused
+RPM_PER_MODEL = "60"
+DEADLINE_SECONDS = "900"     # give up (with a clear message) after this long
+TARGET_LANGS = "he"          # comma separated, e.g. "he,ru"
+SOURCE_LANG = "eng"          # OpenSubtitles language code of the subtitle to translate from
+DAILY_LIMIT = "25"           # max NEW translations per day (cached ones are free)
+QUOTA_TZ = "Asia/Jerusalem"  # the day rolls over at midnight in this time zone
+BATCH_SIZE = "200"           # cues per Gemini request
+BATCHES_PER_STEP = "5"
+WAIT_SECONDS = "25"          # how long the .srt request waits before returning the "in progress" cue
+FAIL_COOLDOWN_SECONDS = "120"
+CACHE_TTL_DAYS = "180"
+RTL_MARKS = "on"             # wrap RTL lines (Hebrew/Arabic...) in U+200F marks
+ALLOWED_SOURCE_HOSTS = "strem.io"
+MAX_SOURCES = "1"

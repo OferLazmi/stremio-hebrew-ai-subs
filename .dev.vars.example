@@ -1,0 +1,3 @@
+ACCESS_TOKEN=testtoken123
+GEMINI_API_KEY=mock-key
+# for a real local run use your real key; e2e tests use the mock key above

@@ -1,0 +1,22 @@
+{
+  "name": "stremio-ai-subs",
+  "version": "1.0.0",
+  "description": "Stremio addon: translates subtitles with Gemini, runs on Cloudflare Workers",
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "tsx --test test/srt.test.ts",
+    "dev": "wrangler dev",
+    "test:mock-gemini": "node test/mock-gemini.mjs",
+    "test:e2e": "tsx test/e2e.mjs",
+    "deploy": "bash ./deploy.sh"
+  },
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.86.0"
+  },
+  "private": true
+}
